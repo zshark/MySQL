@@ -1,0 +1,66 @@
+InnoDB增强
+1.可以使用就地 ALTER TABLE 增加 VARCHAR 列大小，详见https://dev.mysql.com/doc/refman/5.7/en/innodb-online-ddl-operations.html
+2.通过优化 CREATE TABLE、DROP TABLE、TRUNCATE TABLE 和 ALTER TABLE 语句，提高了 InnoDB 临时表的 DDL 性能。
+3.InnoDB 临时表元数据不再存储到 InnoDB 系统表中。 相反，新表 INNODB_TEMP_TABLE_INFO 为用户提供活动临时表的快照。
+4.InnoDB 现在支持 MySQL 支持的空间数据类型。
+5.现在所有非压缩 InnoDB 临时表都有一个单独的表空间。
+6.innochecksum 功能通过几个新选项和扩展功能得到增强。详见 https://dev.mysql.com/doc/refman/5.7/en/innochecksum.html
+7.用于普通和压缩临时表和相关对象的新型非重做撤消日志现在驻留在临时表空间中。详见https://dev.mysql.com/doc/refman/5.7/en/innodb-undo-logs.html
+8.InnoDB 缓冲池转储和加载操作得到增强。一个新的系统变量 innodb_buffer_pool_dump_pct 允许您指定每个缓冲池中最近使用的页面的百分比以进行读取和转储。 
+当 InnoDB 后台任务正在执行其他 I/O 活动时，InnoDB 尝试使用 innodb_io_capacity 设置限制每秒缓冲池加载操作的数量。
+9.InnoDB 添加了对全文解析器插件的支持。
+	https://dev.mysql.com/doc/extending-mysql/5.7/en/plugin-types.html#full-text-plugin-type
+	https://dev.mysql.com/doc/extending-mysql/5.7/en/writing-full-text-plugins.html
+10.InnoDB 支持多个页面清理线程，用于从缓冲池实例中刷新脏页面。 一个新的系统变量 innodb_page_cleaners 用于指定页面清理线程的数量。
+11.在线 DDL 支持扩展到常规和分区 InnoDB 表的以下操作：
+	OPTIMIZE TABLE
+	ALTER TABLE ... FORCE
+	ALTER TABLE ... ENGINE=INNODB
+12.Linux 上的 Fusion-io 非易失性内存 (NVM) 文件系统提供原子写入能力，这使得 InnoDB 双写缓冲区变得多余。 
+对于位于支持原子写入的 Fusion-io 设备上的系统表空间文件（ibdata 文件），InnoDB 双写缓冲区会自动禁用。
+13.InnoDB 支持分区 InnoDB 表和单个 InnoDB 表分区的可传输表空间功能。详见https://dev.mysql.com/doc/refman/5.7/en/innodb-table-import.html 
+14.innodb_buffer_pool_size 参数是动态的，允许您在不重新启动服务器的情况下调整缓冲池的大小。
+	https://dev.mysql.com/doc/refman/5.7/en/innodb-buffer-pool-resize.html#innodb-buffer-pool-online-resize
+15.多线程页面清理器支持 (innodb_page_cleaners) 扩展到关闭和恢复阶段。
+16.InnoDB 支持使用 SPATIAL 索引对空间数据类型进行索引，包括使用 ALTER TABLE ... ALGORITHM=INPLACE 进行在线操作（ADD SPATIAL INDEX）。
+17.InnoDB 在创建或重建索引时执行批量加载。这种创建索引的方法称为“排序索引构建”。
+	https://dev.mysql.com/doc/refman/5.7/en/sorted-index-builds.html
+18.新的日志记录类型 (MLOG_FILE_NAME) 用于标识自上次检查点以来已修改的表空间。
+	https://dev.mysql.com/doc/refman/5.7/en/innodb-recovery.html#innodb-recovery-tablespace-discovery
+19.可以截断驻留在撤消表空间中的撤消日志。
+	https://dev.mysql.com/doc/refman/5.7/en/innodb-undo-tablespaces.html#truncate-undo-tablespace
+20.InnoDB 支持原生分区。 以前，InnoDB 依赖于 ha_partition 处理程序，它为每个分区创建一个处理程序对象。
+21.InnoDB 支持使用 CREATE TABLESPACE 语法创建通用表空间。
+	https://dev.mysql.com/doc/refman/5.7/en/general-tablespaces.html
+22.DYNAMIC 将 COMPACT 替换为 InnoDB 表的隐式默认行格式。
+	https://dev.mysql.com/doc/refman/5.7/en/innodb-row-format.html#innodb-row-format-defining
+23.从 MySQL 5.7.11 开始，InnoDB 支持 file-per-table 表空间的静态数据加密。
+	https://dev.mysql.com/doc/refman/5.7/en/keyring.html
+	https://dev.mysql.com/doc/refman/5.7/en/innodb-data-encryption.html
+24.从 MySQL 5.7.24 开始，与 MySQL 捆绑的 zlib 库版本从 1.2.3 版本提升到 1.2.11 版本。 MySQL 在 zlib 库的帮助下实现压缩。
+
+优化器
+1. EXPLAIN 可用于获取在命名连接中执行的可解释语句的执行计划：
+	https://dev.mysql.com/doc/refman/5.7/en/explain-for-connection.html
+2. 可以在单个 SQL 语句中向优化器提供提示，与使用 optimizer_switch 系统变量相比，它可以更好地控制语句执行计划。
+	https://dev.mysql.com/doc/refman/5.7/en/optimizer-hints.html
+3. prefer_ordering_index 标志。 默认情况下，只要优化器确定这将导致更快的执行，MySQL 就会尝试对任何具有 LIMIT 子句的 ORDER BY 或 GROUP BY 查询使用有序索引。
+	https://dev.mysql.com/doc/refman/5.7/en/switchable-optimizations.html
+	https://dev.mysql.com/doc/refman/5.7/en/limit-optimization.html
+日志
+1. 以前，在 Unix 和类 Unix 系统上，MySQL 支持将服务器错误日志发送到 syslog 是通过 mysqld_safe 捕获服务器错误输出并将其传递给 syslog 来实现的。 
+该服务器现在包括本机 syslog 支持，该支持已扩展到包括 Windows。 有关将服务器错误输出发送到 syslog 的更多信息
+	https://dev.mysql.com/doc/refman/5.7/en/error-log.html
+2. mysql 客户端现在有一个 --syslog 选项，可以将交互式语句发送到系统 syslog 工具。
+	https://dev.mysql.com/doc/refman/5.7/en/mysql-logging.html
+
+生成列
+1. MySQL 现在支持在 CREATE TABLE 和 ALTER TABLE 语句中指定生成列。 生成列的值是根据在列创建时指定的表达式计算的。 
+生成的列可以是虚拟的（在读取行时“即时”计算）或存储（在插入或更新行时计算）
+
+复制
+1. 在不使用 STOP SLAVE 的情况下更改复制源
+2. 现在可以进行多源复制。
+	https://dev.mysql.com/doc/refman/5.7/en/replication-multi-source.html
+3. 组复制性能模式表
+	
