@@ -1,0 +1,115 @@
+1、MySQL各版本，对于DDL的处理方式是不同的，主要有三种：
+
+
+
+①：Copy Table方式： 这是InnoDB最早支持的方式。顾名思义，通过临时表拷贝的方式实现的。新建一个带有新结构的临时表，将原表数据全部拷贝到临                    时表，然后Rename，完成创建操作。这个方式过程中，原表是可读的，不可写。但是会消耗一倍的存储空间。
+
+②：Inplace方式：这是原生MySQL 5.5，以及innodb_plugin中提供的方式。所谓Inplace，也就是在原表上直接进行，不会拷贝临时表。相对于Copy                        Table方式，这比较高效率。原表同样可读的，但是不可写。
+
+③：Online方式：这是MySQL 5.6以上版本中提供的方式。无论是Copy Table方式，还是Inplace方式，原表只能允许读取，           不可写。对应用有较大的限制，因此MySQL最新版本中，InnoDB支持了所谓的Online方式DDL。与以上两种方式相比，online方式支持DDL时不仅可           以读，还可以写，对于dba来说，这是一个非常棒的改进。
+
+
+
+2、MySQL5.7中online ddl：（algorithm=inplace）
+
+
+
+ALGORITHM=INPLACE，可以避免重建表带来的IO和CPU消耗，保证ddl期间依然有良好的性能和并发。 -----****
+
+
+
+ALGORITHM=COPY，需要拷贝原始表，所以不允许并发DML写操作，可读。这种copy方式的效率还是不如 inplace ，因为前者需要记录undo和redo log，而且因为临时占用buffer pool引起短时间内性能受影响。
+
+
+
+①：In-Place为Yes是优选项，说明该操作支持INPLACE
+
+②：Copies Table为No是优选项，因为为Yes需要重建表。大部分情况与In-Place是相反的
+
+③：Allows Concurrent DML?为Yes是优选项，说明ddl期间表依然可读写，可以指定 LOCK=NONE（如果操作允许的话mysql自动就是NONE）
+
+④：Allows Concurrent Query?默认所有DDL操作期间都允许查询请求，放在这只是便于参考
+
+
+
+二、在线DDL的限制                                               
+
+1）在alter table时，如果涉及到table copy操作，要确保datadir目录有足够的磁盘空间，能够放的下整张表，因为拷贝表的的操作是直接在数据目录下进行的。                                                                     
+
+2）添加索引无需table copy，但要确保tmpdir目录足够存下索引一列的数据（如果是组合索引，当前临时排序文件一合并到原表上就会删除）            3）在主从环境下，主库执行alter命令在完成之前是不会进入binlog记录事件，如果允许dml操作则不影响记录时间，所以期间不会导致延迟。然而，由于从库是单个SQL Thread按顺序应用relay log，轮到ALTER语句时直到执行完才能下一条，所以从库会在master ddl完成后开始产生延迟。（pt-osc可以控制延迟时间，所以这种场景下它更合适）     
+
+4）During each online DDL ALTER TABLE statement, regardless of the LOCK clause, there are brief periods at the beginning and end requiring an exclusive lock on the table (the same kind of lock specified by the LOCK=EXCLUSIVE clause). Thus, an online DDL operation might wait before starting if there is a long-running transaction performing inserts, updates, deletes, or SELECT … FOR UPDATE on that table; and an online DDL operation might wait before finishing if a similar long-running transaction was started while the ALTER TABLE was in progress.                                
+
+5）在执行一个允许并发DML在线 ALTER TABLE时，结束之前这个线程会应用 online log 记录的增量修改，而这些修改是其它thread里产生的，所以有可能会遇到重复键值错误(ERROR 1062 (23000): Duplicate entry)。                                                                                
+
+6）涉及到table copy时，目前还没有机制限制暂停ddl，或者限制IO阀值                                                                         7）在MySQL 5.7.6开始能够通过 performance_schema 观察alter table的进度                            
+
+一般来说，建议把多个alter语句合并在一起进行，避免多次table rebuild带来的消耗。但是也要注意分组，比如需要copy table和只需inplace就能完成的，应该分两个alter语句。                            
+
+8）如果DDL执行时间很长，期间又产生了大量的dml操作，以至于超过了innodb_online_alter_log_max_size变量所指定的大小，会引起DB_ONLINE_LOG_TOO_BIG 错误。默认为 128M，特别对于需要拷贝大表的alter操作，考虑临时加大该值，以此获得更大的日志缓存空间                                        
+
+9）执行完 ALTER TABLE 之后，最好 ANALYZE TABLE tb1 去更新索引统计信息   
+
+                                                                                                                   
+
+三、Online DDL的实现过程                                                                                                  
+
+  online ddl主要包括3个阶段，prepare阶段，ddl执行阶段，commit阶段，rebuild方式比no-rebuild方式实质多了一个ddl执行阶段，prepare阶段和commit阶段类似。下面将主要介绍ddl执行过程中三个阶段的流程。
+
+
+
+3.1、Prepare阶段:                                                    
+
+①：创建新的临时frm文件(与InnoDB无关)                                     ②：持有EXCLUSIVE-MDL锁，禁止读写                                       ③：根据alter类型，确定执行方式(copy,online-rebuild,online-norebuild)
+
+    假如是Add Index，则选择online-norebuild即INPLACE方式             
+
+④：更新数据字典的内存对象                                           
+
+⑤：分配row_log对象记录增量(仅rebuild类型需要)                               ⑥：生成新的临时ibd文件(仅rebuild类型需要)                           
+
+                                                                
+
+3.2、ddl执行阶段:                                                    
+
+①：降级EXCLUSIVE-MDL锁，允许读写                                    
+
+②：扫描old_table的聚集索引每一条记录rec                                   ③：遍历新表的聚集索引和二级索引，逐一处理                           
+
+④：根据rec构造对应的索引项                                          
+
+⑤：将构造索引项插入sort_buffer块排序                                     ⑥：将sort_buffer块更新到新的索引上                                     ⑦：记录ddl执行过程中产生的增量(仅rebuild类型需要)                           ⑧：重放row_log中的操作到新索引上(no-rebuild数据是在原表上更新的)                 ⑨：重放row_log间产生dml操作append到row_log最后一个Block                           
+
+3.3、commit阶段:                                                        
+
+①：当前Block为row_log最后一个时，禁止读写，升级到EXCLUSIVE-MDL锁                 ②：重做row_log中最后一部分增量                                         ③：更新innodb的数据字典表                                           ④：提交事务(刷事务的redo日志)                                         ⑤：修改统计信息                                                   ⑥：rename临时idb文件，frm文件                                         ⑦：变更完成 
+
+
+
+---mysql5.7官方文档说明：
+
+15.13.1 Online DDL Overview
+The online DDL feature enhances many DDL operations that formerly required a table copy or blocked
+DML operations on the table, or both. Table 15.10, “Online Status for DDL Operations” shows how the
+online DDL feature applies to each DDL statement.
+With the exception of ALTER TABLE partitioning clauses, online DDL operations for partitioned
+InnoDB tables follow the same rules that apply to regular InnoDB tables. For more information, see
+Section 15.13.7, “Online DDL for Partitioned Tables”.
+Some factors affect the performance, space usage, and semantics of online DDL operations. For more
+information, see Section 15.13.8, “Online DDL Limitations”.
+The “In-Place?” column shows which operations permit the ALGORITHM=INPLACE clause.
+The “Rebuilds Table?” column shows which operations rebuild the table. For operations that use
+the INPLACE algorithm, the table is rebuilt in place. For operations that do not support the INPLACE
+algorithm, the table copy method is used to rebuild the table.
+The “Permits Concurrent DML?” column shows which operations are performed fully online. You can
+specify LOCK=NONE to assert that concurrent DML is permitted during the DDL operation. MySQL
+automatically permits concurrent DML when possible.
+Concurrent queries are permitted during all online DDL operations. You can specify LOCK=SHARED
+to assert that concurrent queries are permitted during a DDL operation. MySQL automatically permits
+concurrent queries when possible.
+The “Notes” column provides additional information and explains exceptions and dependencies related
+to the “Yes/No” values of other columns. An asterisk indicates an exception or dependency
+
+官方文档地址：
+
+ https://dev.mysql.com/doc/refman/5.7/en/innodb-create-index-overview.html 
